@@ -1,36 +1,168 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# ReviewWorld
+
+**Yelp for Food Products** — discover, rate, and review packaged foods organized by brand and product line.
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Framework | Next.js 14 (App Router) |
+| Auth | NextAuth v5 (Google OAuth) |
+| Database | PostgreSQL |
+| ORM | Prisma |
+| Styling | Tailwind CSS + shadcn/ui |
+
+---
 
 ## Getting Started
 
-First, run the development server:
+### 1. Start the database
+
+```bash
+docker-compose up -d
+```
+
+### 2. Configure environment
+
+Copy `.env.example` to `.env.local` and fill in the required values:
+
+```bash
+cp .env.example .env.local
+```
+
+Required variables:
+```
+DATABASE_URL=postgresql://...
+NEXTAUTH_SECRET=...
+NEXTAUTH_URL=http://localhost:3000
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+```
+
+### 3. Install dependencies
+
+```bash
+npm install
+```
+
+### 4. Run migrations and seed
+
+```bash
+npx prisma migrate dev
+npx prisma db seed
+```
+
+### 5. Start the dev server
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+---
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Data Model
 
-## Learn More
+### Core models
 
-To learn more about Next.js, take a look at the following resources:
+| Model | Description |
+|---|---|
+| `User` | Auth user; `role` field (`USER` \| `ADMIN`) — P0.5 |
+| `Brand` | e.g. "Oreo"; has `status` (`PENDING` \| `APPROVED` \| `REJECTED`) — P0.5 |
+| `ProductLine` | e.g. "Oreo Original"; belongs to Brand; has `status` — P0.5 |
+| `Variation` | e.g. "Family Pack 500 g"; belongs to ProductLine; has `status` — P0.5 |
+| `Review` | Star rating + text; belongs to Variation + User |
+| `Suggestion` | User-submitted new Brand/ProductLine/Variation pending admin review |
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### P0.5 additions
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- `User.role` — differentiates regular users from admins
+- `status` on `Brand`, `ProductLine`, `Variation` — controls visibility (only `APPROVED` records shown publicly)
 
-## Deploy on Vercel
+---
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## URL Structure
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+### Public pages
+
+| Route | Page |
+|---|---|
+| `/` | Home — featured brands / search |
+| `/brands` | Brand directory |
+| `/brands/[brandSlug]` | Brand detail — product lines |
+| `/brands/[brandSlug]/[lineSlug]` | Product line detail — variations + reviews |
+| `/brands/[brandSlug]/[lineSlug]/[variationSlug]` | Variation detail — reviews |
+| `/brands/[brandSlug]/[lineSlug]/[variationSlug]/review` | Submit a review |
+
+### User pages
+
+| Route | Page |
+|---|---|
+| `/profile` | Public profile |
+| `/account` | Account settings |
+
+### Suggestion pages (P0.5)
+
+| Route | Page |
+|---|---|
+| `/suggest/brand` | Suggest a new brand |
+| `/suggest/product-line` | Suggest a new product line |
+| `/suggest/variation` | Suggest a new variation |
+
+### Admin portal (P0.5)
+
+| Route | Page |
+|---|---|
+| `/admin` | Admin dashboard |
+| `/admin/submissions` | Review pending suggestions |
+| `/admin/submissions/brands` | Approve / reject brand suggestions |
+| `/admin/submissions/product-lines` | Approve / reject product line suggestions |
+| `/admin/submissions/variations` | Approve / reject variation suggestions |
+
+### API routes
+
+| Method + Path | Description |
+|---|---|
+| `GET /api/brands` | List approved brands |
+| `GET /api/brands/[brandSlug]` | Brand + product lines |
+| `GET /api/reviews` | Reviews (filterable) |
+| `POST /api/reviews` | Submit a review (auth required) |
+| `POST /api/suggest/brand` | Submit brand suggestion |
+| `POST /api/suggest/product-line` | Submit product line suggestion |
+| `POST /api/suggest/variation` | Submit variation suggestion |
+| `GET /api/admin/submissions/[type]` | List pending submissions (admin) |
+| `POST /api/admin/submissions/[type]` | Approve / reject submission (admin) |
+| `POST /api/auth/[...nextauth]` | NextAuth handler |
+
+---
+
+## Implementation Status
+
+### Done
+
+- [x] Next.js 14 scaffold + Tailwind + shadcn/ui
+- [x] Prisma schema + seed
+- [x] NextAuth Google OAuth
+- [x] UX specs for all P0 + P0.5 pages (`docs/ux/`)
+- [x] PRD + backlog (`docs/pm/`)
+
+### TODO
+
+- [ ] Schema migration: `User.role`, `status` on `Brand` / `ProductLine` / `Variation`
+- [ ] API routes (with `status = APPROVED` filter on public endpoints)
+- [ ] Suggestion API routes
+- [ ] Page components
+  - [ ] Home
+  - [ ] Brand directory
+  - [ ] Brand detail
+  - [ ] Product line detail
+  - [ ] Variation detail
+  - [ ] Review form
+  - [ ] Profile
+  - [ ] Account settings
+  - [ ] Navigation / layout
+  - [ ] Suggest forms (brand, product line, variation)
+  - [ ] Admin portal (dashboard + submission review)
