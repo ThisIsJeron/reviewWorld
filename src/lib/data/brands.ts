@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { cache } from "react";
+import { unstable_cache } from "next/cache";
 
 export interface BrandWithStats {
   id: string;
@@ -12,87 +12,100 @@ export interface BrandWithStats {
   reviewCount: number;
 }
 
-export const getBrandsWithStats = cache(
-  async ({
-    q = "",
-    sort = "alpha",
-    page = 1,
-    perPage = 12,
-  }: {
-    q?: string;
-    sort?: string;
-    page?: number;
-    perPage?: number;
-  }): Promise<{ brands: BrandWithStats[]; total: number }> => {
-    const where = {
-      status: "APPROVED" as const,
-      ...(q ? { name: { contains: q, mode: "insensitive" as const } } : {}),
-    };
+async function _getBrandsWithStats({
+  q = "",
+  sort = "alpha",
+  page = 1,
+  perPage = 12,
+}: {
+  q?: string;
+  sort?: string;
+  page?: number;
+  perPage?: number;
+}): Promise<{ brands: BrandWithStats[]; total: number }> {
+  const where = {
+    status: "APPROVED" as const,
+    ...(q ? { name: { contains: q, mode: "insensitive" as const } } : {}),
+  };
 
-    const [brands, total] = await Promise.all([
-      prisma.brand.findMany({
-        where,
-        include: {
-          _count: { select: { productLines: true } },
-          productLines: {
-            where: { status: "APPROVED" },
-            include: {
-              variations: {
-                where: { status: "APPROVED" },
-                include: {
-                  reviews: { select: { rating: true } },
-                },
+  const [brands, total] = await Promise.all([
+    prisma.brand.findMany({
+      where,
+      include: {
+        _count: { select: { productLines: true } },
+        productLines: {
+          where: { status: "APPROVED" },
+          include: {
+            variations: {
+              where: { status: "APPROVED" },
+              include: {
+                reviews: { select: { rating: true } },
               },
             },
           },
         },
-      }),
-      prisma.brand.count({ where }),
-    ]);
+      },
+    }),
+    prisma.brand.count({ where }),
+  ]);
 
-    const withStats: BrandWithStats[] = brands.map((brand) => {
-      const allReviews = brand.productLines.flatMap((pl) =>
-        pl.variations.flatMap((v) => v.reviews),
-      );
-      const reviewCount = allReviews.length;
-      const avgRating =
-        reviewCount > 0
-          ? allReviews.reduce((sum: number, r: { rating: number }) => sum + r.rating, 0) /
-            reviewCount
-          : 0;
+  const withStats: BrandWithStats[] = brands.map((brand) => {
+    const allReviews = brand.productLines.flatMap((pl) =>
+      pl.variations.flatMap((v) => v.reviews),
+    );
+    const reviewCount = allReviews.length;
+    const avgRating =
+      reviewCount > 0
+        ? allReviews.reduce((sum: number, r: { rating: number }) => sum + r.rating, 0) /
+          reviewCount
+        : 0;
 
-      return {
-        id: brand.id,
-        name: brand.name,
-        slug: brand.slug,
-        description: brand.description,
-        logoUrl: brand.logoUrl,
-        productLineCount: brand._count.productLines,
-        avgRating,
-        reviewCount,
-      };
-    });
+    return {
+      id: brand.id,
+      name: brand.name,
+      slug: brand.slug,
+      description: brand.description,
+      logoUrl: brand.logoUrl,
+      productLineCount: brand._count.productLines,
+      avgRating,
+      reviewCount,
+    };
+  });
 
-    // Sort
-    if (sort === "alpha" || sort === "") {
-      withStats.sort((a, b) => a.name.localeCompare(b.name));
-    } else if (sort === "alpha-desc") {
-      withStats.sort((a, b) => b.name.localeCompare(a.name));
-    } else if (sort === "reviews") {
-      withStats.sort((a, b) => b.reviewCount - a.reviewCount);
-    } else if (sort === "rating") {
-      withStats.sort((a, b) => b.avgRating - a.avgRating);
-    }
+  // Sort
+  if (sort === "alpha" || sort === "") {
+    withStats.sort((a, b) => a.name.localeCompare(b.name));
+  } else if (sort === "alpha-desc") {
+    withStats.sort((a, b) => b.name.localeCompare(a.name));
+  } else if (sort === "reviews") {
+    withStats.sort((a, b) => b.reviewCount - a.reviewCount);
+  } else if (sort === "rating") {
+    withStats.sort((a, b) => b.avgRating - a.avgRating);
+  }
 
-    // Paginate
-    const start = (page - 1) * perPage;
-    const paginated = withStats.slice(start, start + perPage);
+  // Paginate
+  const start = (page - 1) * perPage;
+  const paginated = withStats.slice(start, start + perPage);
 
-    return { brands: paginated, total };
-  },
-);
+  return { brands: paginated, total };
+}
 
-export const getBrandBySlug = cache(async (slug: string) => {
+export const getBrandsWithStats = async (params: {
+  q?: string;
+  sort?: string;
+  page?: number;
+  perPage?: number;
+}) => {
+  const { q = "", sort = "alpha", page = 1, perPage = 12 } = params;
+  const cached = unstable_cache(
+    () => _getBrandsWithStats({ q, sort, page, perPage }),
+    ["brands-with-stats", q, sort, String(page), String(perPage)],
+    { revalidate: 300, tags: ["brands"] },
+  );
+  return cached();
+};
+
+async function _getBrandBySlug(slug: string) {
   return prisma.brand.findUnique({
     where: { slug, status: "APPROVED" },
     include: {
@@ -110,4 +123,13 @@ export const getBrandBySlug = cache(async (slug: string) => {
       },
     },
   });
-});
+}
+
+export const getBrandBySlug = async (slug: string) => {
+  const cached = unstable_cache(
+    () => _getBrandBySlug(slug),
+    ["brand-by-slug", slug],
+    { revalidate: 300, tags: ["brands"] },
+  );
+  return cached();
+};

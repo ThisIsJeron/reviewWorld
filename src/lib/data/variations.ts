@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { cache } from "react";
+import { unstable_cache } from "next/cache";
 
 export interface VariationWithStats {
   id: string;
@@ -20,27 +20,44 @@ export interface VariationWithStats {
   };
 }
 
-async function computeStats(
-  variationId: string,
-): Promise<{ avgRating: number; reviewCount: number; wouldBuyAgainPercent: number }> {
+async function computeStatsBatch(
+  variationIds: string[],
+): Promise<Map<string, { avgRating: number; reviewCount: number; wouldBuyAgainPercent: number }>> {
+  const defaultStats = { avgRating: 0, reviewCount: 0, wouldBuyAgainPercent: 0 };
+  if (variationIds.length === 0) return new Map();
+
   const reviews = await prisma.review.findMany({
-    where: { variationId },
-    select: { rating: true, wouldBuyAgain: true },
+    where: { variationId: { in: variationIds } },
+    select: { variationId: true, rating: true, wouldBuyAgain: true },
   });
 
-  if (reviews.length === 0) {
-    return { avgRating: 0, reviewCount: 0, wouldBuyAgainPercent: 0 };
+  const grouped = new Map<string, { ratings: number[]; buyAgainCount: number }>();
+  for (const r of reviews) {
+    let entry = grouped.get(r.variationId);
+    if (!entry) {
+      entry = { ratings: [], buyAgainCount: 0 };
+      grouped.set(r.variationId, entry);
+    }
+    entry.ratings.push(r.rating);
+    if (r.wouldBuyAgain) entry.buyAgainCount++;
   }
 
-  const avgRating =
-    reviews.reduce((sum: number, r: { rating: number }) => sum + r.rating, 0) / reviews.length;
-  const wouldBuyAgainCount = reviews.filter((r: { wouldBuyAgain: boolean }) => r.wouldBuyAgain).length;
-  const wouldBuyAgainPercent = Math.round((wouldBuyAgainCount / reviews.length) * 100);
+  const result = new Map<string, { avgRating: number; reviewCount: number; wouldBuyAgainPercent: number }>();
+  for (const id of variationIds) {
+    const entry = grouped.get(id);
+    if (!entry || entry.ratings.length === 0) {
+      result.set(id, defaultStats);
+    } else {
+      const avgRating = entry.ratings.reduce((sum, r) => sum + r, 0) / entry.ratings.length;
+      const wouldBuyAgainPercent = Math.round((entry.buyAgainCount / entry.ratings.length) * 100);
+      result.set(id, { avgRating, reviewCount: entry.ratings.length, wouldBuyAgainPercent });
+    }
+  }
 
-  return { avgRating, reviewCount: reviews.length, wouldBuyAgainPercent };
+  return result;
 }
 
-export const getTrendingVariations = cache(async (limit = 6): Promise<VariationWithStats[]> => {
+async function _getTrendingVariations(limit: number): Promise<VariationWithStats[]> {
   const thirtyDaysAgo = new Date();
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
@@ -90,59 +107,67 @@ export const getTrendingVariations = cache(async (limit = 6): Promise<VariationW
     },
   });
 
-  const withStats = await Promise.all(
-    variations.map(async (v) => {
-      const stats = await computeStats(v.id);
-      return { ...v, ...stats };
-    }),
-  );
+  const statsMap = await computeStatsBatch(variations.map((v) => v.id));
+  const withStats = variations.map((v) => ({ ...v, ...statsMap.get(v.id)! }));
 
   return withStats;
-});
+}
 
-export const getRecentlyReviewedVariations = cache(
-  async (limit = 4): Promise<VariationWithStats[]> => {
-    const recentReviews = await prisma.review.findMany({
-      distinct: ["variationId"],
-      orderBy: { createdAt: "desc" },
-      take: limit,
-      where: { variation: { status: "APPROVED" } },
-      select: { variationId: true },
-    });
+export const getTrendingVariations = async (limit = 6): Promise<VariationWithStats[]> => {
+  const cached = unstable_cache(
+    () => _getTrendingVariations(limit),
+    ["trending-variations", String(limit)],
+    { revalidate: 60, tags: ["variations"] },
+  );
+  return cached();
+};
 
-    if (recentReviews.length === 0) return [];
+async function _getRecentlyReviewedVariations(limit: number): Promise<VariationWithStats[]> {
+  const recentReviews = await prisma.review.findMany({
+    distinct: ["variationId"],
+    orderBy: { createdAt: "desc" },
+    take: limit,
+    where: { variation: { status: "APPROVED" } },
+    select: { variationId: true },
+  });
 
-    const variationIds = recentReviews.map((r: { variationId: string }) => r.variationId);
+  if (recentReviews.length === 0) return [];
 
-    const variations = await prisma.variation.findMany({
-      where: { id: { in: variationIds }, status: "APPROVED" },
-      select: {
-        id: true,
-        name: true,
-        slug: true,
-        imageUrl: true,
-        productLine: {
-          select: {
-            name: true,
-            slug: true,
-            brand: { select: { name: true, slug: true } },
-          },
+  const variationIds = recentReviews.map((r: { variationId: string }) => r.variationId);
+
+  const variations = await prisma.variation.findMany({
+    where: { id: { in: variationIds }, status: "APPROVED" },
+    select: {
+      id: true,
+      name: true,
+      slug: true,
+      imageUrl: true,
+      productLine: {
+        select: {
+          name: true,
+          slug: true,
+          brand: { select: { name: true, slug: true } },
         },
       },
-    });
+    },
+  });
 
-    const withStats = await Promise.all(
-      variations.map(async (v) => {
-        const stats = await computeStats(v.id);
-        return { ...v, ...stats };
-      }),
-    );
+  const statsMap = await computeStatsBatch(variations.map((v) => v.id));
+  const withStats = variations.map((v) => ({ ...v, ...statsMap.get(v.id)! }));
 
-    // Re-order to match the original order
-    const ordered = variationIds
-      .map((id: string) => withStats.find((v) => v.id === id))
-      .filter(Boolean) as VariationWithStats[];
+  // Re-order to match the original order
+  const ordered = variationIds
+    .map((id: string) => withStats.find((v) => v.id === id))
+    .filter(Boolean) as VariationWithStats[];
 
-    return ordered;
-  },
-);
+  return ordered;
+}
+
+export const getRecentlyReviewedVariations = async (limit = 4): Promise<VariationWithStats[]> => {
+  const cached = unstable_cache(
+    () => _getRecentlyReviewedVariations(limit),
+    ["recently-reviewed-variations", String(limit)],
+    { revalidate: 60, tags: ["variations"] },
+  );
+  return cached();
+};
